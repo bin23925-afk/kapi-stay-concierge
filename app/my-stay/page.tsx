@@ -1,97 +1,96 @@
-"use client";
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
+import {
+  getMyStayBookings,
+  getMyStayBookingDetails,
+  type MyStayBookingSummary,
+  type MyStayBookingDetails,
+} from "@/lib/data/my-stay";
+import { MyStayError } from "@/lib/types/my-stay";
+import MyStayClient from "./MyStayClient";
 
-import * as React from "react";
-import { useSearchParams, useRouter } from "next/navigation";
-import { Suspense } from "react";
-import { KeyRound, Search, ArrowRight, ShieldCheck, Phone } from "lucide-react";
-import { Button, Input, Badge } from "@/components/ui";
+export const metadata = {
+  title: "Kỳ nghỉ của tôi | Kapi Stay Concierge",
+  description: "Quản lý kỳ nghỉ, xem mã khóa phòng thông minh và tiện ích lưu trú tại Kapi Stay.",
+};
 
-function MyStayContent() {
-  const searchParams = useSearchParams();
-  const router = useRouter();
-  const initialCode = searchParams.get("code") || "";
-  const [bookingCode, setBookingCode] = React.useState(initialCode);
-  const [errorMessage, setErrorMessage] = React.useState("");
-  const [isLoading, setIsLoading] = React.useState(false);
+const CANONICAL_PARAM = "bookingId";
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-  React.useEffect(() => {
-    if (initialCode) {
-      setBookingCode(initialCode);
-    }
-  }, [initialCode]);
+interface MyStayPageProps {
+  searchParams?: Promise<{ [key: string]: string | string[] | undefined }>;
+}
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!bookingCode.trim()) {
-      setErrorMessage("Vui lòng nhập mã đơn đặt phòng (Ví dụ: KP-1029)");
-      return;
-    }
-    setErrorMessage("");
-    setIsLoading(true);
-
-    setTimeout(() => {
-      setIsLoading(false);
-      // Giả lập kiểm tra đơn và chuyển hướng hoặc hiển thị thông tin
-      alert(`Đang tra cứu mã phòng: ${bookingCode.trim().toUpperCase()}`);
-    }, 800);
+export default async function MyStayPage({ searchParams }: MyStayPageProps) {
+  const resolvedParams = searchParams ? await searchParams : {};
+  const getSingleParam = (key: string): string | undefined => {
+    const val = resolvedParams[key];
+    if (typeof val === "string") return val;
+    if (Array.isArray(val) && typeof val[0] === "string") return val[0];
+    return undefined;
   };
 
+  const rawBookingLocator =
+    getSingleParam(CANONICAL_PARAM) ||
+    getSingleParam("bookingID") ||
+    getSingleParam("booking") ||
+    getSingleParam("code");
+
+  const trimmedLocator = rawBookingLocator?.trim();
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.auth.getClaims();
+
+  // Server-side route authorization check using getClaims()
+  if (error || !data?.claims?.sub) {
+    let returnUrl = "/my-stay";
+    if (trimmedLocator) {
+      returnUrl = `/my-stay?${CANONICAL_PARAM}=${encodeURIComponent(trimmedLocator)}`;
+    }
+
+    redirect(`/login?next=${encodeURIComponent(returnUrl)}`);
+  }
+
+  let initialBookings: MyStayBookingSummary[] = [];
+  try {
+    initialBookings = await getMyStayBookings();
+  } catch (err) {
+    console.error("[MyStayPage] Error fetching bookings on server:", err);
+  }
+
+  let initialStayData: MyStayBookingDetails | null = null;
+  let initialError: string | null = null;
+
+  if (trimmedLocator) {
+    if (!UUID_REGEX.test(trimmedLocator)) {
+      initialError = "Không tìm thấy booking hoặc bạn không có quyền truy cập.";
+    } else {
+      try {
+        initialStayData = await getMyStayBookingDetails(trimmedLocator);
+      } catch (err: unknown) {
+        if (err instanceof MyStayError) {
+          if (err.code === "UNAUTHENTICATED") {
+            initialError = "Vui lòng đăng nhập để xem thông tin kỳ nghỉ.";
+          } else if (err.code === "FORBIDDEN" || err.code === "BOOKING_NOT_FOUND") {
+            initialError = "Không tìm thấy booking hoặc bạn không có quyền truy cập.";
+          } else if (err.code === "BOOKING_DATA_INCOMPLETE") {
+            initialError = "Thông tin kỳ nghỉ đang được cập nhật. Vui lòng thử lại sau.";
+          } else {
+            initialError = "Không thể tải thông tin kỳ nghỉ lúc này. Vui lòng thử lại sau.";
+          }
+        } else {
+          initialError = "Không thể tải thông tin kỳ nghỉ lúc này. Vui lòng thử lại sau.";
+        }
+      }
+    }
+  }
+
   return (
-    <div className="w-full max-w-lg mx-auto py-12 sm:py-20 px-4">
-      <div className="bg-white rounded-2xl border border-dark/10 shadow-sm p-6 sm:p-8">
-        <div className="text-center mb-6">
-          <div className="w-12 h-12 rounded-xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center mx-auto mb-3">
-            <KeyRound className="w-6 h-6" />
-          </div>
-          <h1 className="text-2xl font-bold text-dark">Truy cập phòng của bạn</h1>
-          <p className="text-sm text-dark/60 mt-1">
-            Tra cứu thông tin nhận phòng, hướng dẫn mật mã và tiện ích homestay
-          </p>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <Input
-            label="Mã đơn đặt phòng (Booking Code)"
-            placeholder="Ví dụ: KP-1029"
-            value={bookingCode}
-            onChange={(e) => {
-              setBookingCode(e.target.value);
-              if (errorMessage) setErrorMessage("");
-            }}
-            errorMessage={errorMessage}
-            startIcon={<Search className="w-4 h-4 text-dark/40" />}
-            autoFocus
-          />
-
-          <Button
-            type="submit"
-            isLoading={isLoading}
-            className="w-full h-11 text-base font-medium"
-            rightIcon={<ArrowRight className="w-4 h-4" />}
-          >
-            Tra cứu đơn phòng
-          </Button>
-        </form>
-
-        <div className="mt-8 pt-6 border-t border-dark/10 flex flex-col gap-3 text-xs text-dark/60">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-secondary shrink-0" />
-            <span>Mã đặt phòng được gửi qua SMS hoặc email khi đặt phòng thành công.</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Phone className="w-4 h-4 text-primary shrink-0" />
-            <span>Cần trợ giúp khẩn cấp? Gọi Hotline <strong>0988.123.456</strong></span>
-          </div>
-        </div>
-      </div>
-    </div>
+    <MyStayClient
+      initialBookings={initialBookings}
+      initialStayData={initialStayData}
+      initialError={initialError}
+    />
   );
 }
 
-export default function MyStayPage() {
-  return (
-    <Suspense fallback={<div className="p-8 text-center text-dark/60">Đang tải...</div>}>
-      <MyStayContent />
-    </Suspense>
-  );
-}
